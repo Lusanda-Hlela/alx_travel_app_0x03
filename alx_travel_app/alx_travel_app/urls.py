@@ -21,6 +21,6 @@ from listings.views import PaymentView
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path('', include(app_urlpatterns))
-    path('initialize_payment', PaymentView.as_view('post': 'create'))
+    path('', include(app_urlpatterns)),
+    path('initialize_payment/', PaymentView.as_view({'post': 'create'}), name='initialize_payment'),
 ]

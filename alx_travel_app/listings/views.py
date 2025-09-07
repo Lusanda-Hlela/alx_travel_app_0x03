@@ -1,66 +1,93 @@
 import os
-from django.shortcuts import render
 from rest_framework import viewsets
-from .models import Listing, Booking, Payment
-from .serializers import ListingSerializer, BookingSerializer
 from rest_framework.response import Response
-from uuid import uuid4()
+from .models import Listing, Booking, Payment
+from .serializers import (
+    ListingSerializer,
+    BookingSerializer,
+)  # add PaymentSerializer if needed
+from uuid import uuid4
 from dotenv import load_dotenv
 import requests
 
-#  seting environment variables
+# Load environment variables
 load_dotenv()
-CHAPA_SECRET_KEY = os.getenv('CHAPA_SECRET_KEY')
+CHAPA_SECRET_KEY = os.getenv("CHAPA_SECRET_KEY")
+
+
 class ListingView(viewsets.ModelViewSet):
-    """Manually creating view for Listing model."""
     serializer_class = ListingSerializer
     queryset = Listing.objects.all()
+
 
 class BookingView(viewsets.ModelViewSet):
     serializer_class = BookingSerializer
     queryset = Booking.objects.all()
 
+
 class PaymentView(viewsets.ViewSet):
     """
-    Implementing a view for the payment integration set using the base ViewSet.
+    View for handling Chapa payment initialization.
     """
+
     def create(self, request):
         """Initiates payment for a booked listing."""
+        booking_id = request.data.get("id")
+        if not booking_id:
+            return Response(
+                {"status": "error", "description": "Booking ID is required"}, status=400
+            )
+
+        try:
+            booking = Booking.objects.get(id=booking_id)
+        except Booking.DoesNotExist:
+            return Response(
+                {"status": "error", "description": "Booking not found"}, status=404
+            )
+
+        tx_ref = str(uuid4())
+        amount = booking.total_price
+
         initialize_payment_url = "https://api.chapa.co/v1/transaction/initialize"
         headers = {"Authorization": f"Bearer {CHAPA_SECRET_KEY}"}
-        data = request.data
-        booking_id = data.get('id')
-        tx_ref = str(uuid4())
-        booking = Booking.objects.get(id=booking_id)
-        amount = booking.total_price
+
         payment_payload = {
-            "amount": amount,
+            "amount": str(amount),
             "currency": "ETB",
             "tx_ref": tx_ref,
             "customization": {
-                "title": f"listing payment for {booking.listing.name}__{booking_id} "
-                }
+                "title": f"Listing payment for {booking.listing.name}__{booking_id}"
+            },
+            # You’ll probably need these based on Chapa docs
+            "return_url": "http://localhost:8000/payment/callback/",
+            "email": (
+                booking.user.email if hasattr(booking, "user") else "test@example.com"
+            ),
         }
+
         response_data = requests.post(
-            initialize_payment_url, json=payment_payload,
-            headers=headers
-            )
-        if response_data.json().get('status') == 'success':
+            initialize_payment_url, json=payment_payload, headers=headers
+        )
+        response_json = response_data.json()
+
+        if response_json.get("status") == "success":
             payment = Payment.objects.create(
-                amount=amount, payment_status='pending',
-                booking=booking, transaction_id=tx_ref
+                amount=amount, status="pending", booking=booking, transaction_id=tx_ref
             )
-            if payment:
-                return Response(
-                    {
-                        'status': 'success',
-                        'description': 'intialized payment via chapa',
-                        'checkout_url': response_data.json()['data']['checkout_url']
-                    }
-                )
+            return Response(
+                {
+                    "status": "success",
+                    "description": "Payment initialized via Chapa",
+                    "checkout_url": response_json["data"].get("checkout_url"),
+                }
+            )
+
         return Response(
             {
-                'status': 'error',
-                'description': 'chapa payment intialization failed'
-            }
-            )
+                "status": "error",
+                "description": response_json.get(
+                    "message", "Chapa payment initialization failed"
+                ),
+            },
+            status=400,
+        )
